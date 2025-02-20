@@ -1,0 +1,4 @@
+transformers>=4.30
+langchain-core>=0.1
+torch>=2.0
+regex
