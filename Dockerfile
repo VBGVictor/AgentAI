@@ -1,14 +1,20 @@
 FROM python:3.9-slim
 
-# Install dependencies
-RUN pip install --upgrade pip
-RUN pip install tensorflow transformers
-
-# Set the working directory
 WORKDIR /app
 
-# Copy your script into the container
-COPY agent.py /app/agent.py
+# Instalar dependências do sistema
+RUN apt-get update && \
+    apt-get install -y gcc && \
+    rm -rf /var/lib/apt/lists/*
 
-# Run the script
-CMD ["python", "agent.py"]
+COPY requirements.txt .
+
+# Instalar dependências Python com índices múltiplos
+RUN pip install --no-cache-dir \
+    --index-url https://download.pytorch.org/whl/cpu \
+    --extra-index-url https://pypi.org/simple \
+    -r requirements.txt
+
+COPY . .
+
+CMD ["python", "-u", "agent.py"]

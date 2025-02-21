@@ -1,95 +1,120 @@
 import os
+import time
+import logging
 from transformers import pipeline, set_seed
 from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
-from langchain_core.prompt_values import StringPromptValue  # Adicionar esta importação
-import logging
+from functools import lru_cache
+import torch
+from accelerate import Accelerator
 
-# Configuração de logs
+print(f"PyTorch version: {torch.__version__}")
+
+accelerator = Accelerator()
+print(f"Dispositivo: {accelerator.device}")
+
+# Mude o modelo para um mais leve
+MODEL_NAME = "codellama/CodeLlama-7b-hf"
+
+# Configuração de performance
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Desabilitar avisos
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+@lru_cache(maxsize=1)
+def load_model():
+    logger.info("Carregando modelo...")
+    start = time.time()
+    
+    generator = pipeline(
+        "text-generation",
+        model=MODEL_NAME,
+        device_map="auto",
+        torch_dtype="auto",
+        low_cpu_mem_usage=True,
+        trust_remote_code=True
+    )
+    
+    logger.info(f"Modelo carregado em {time.time()-start:.2f}s")
+    return generator
 
-set_seed(42)
-
-logger.info("Carregando o modelo...")
-code_generator = pipeline(
-    "text-generation", 
-    model="gpt2",
-    device=-1
-)
-
-# Template modificado para melhor performance
-template = """Você é um assistente de programação Python. 
-Siga estas regras:
-1. Responda APENAS com código válido ou explicações técnicas
-2. Formate o código com markdown
-3. Seja conciso
-
-Tarefa: {input}"""
+# 2. Template otimizado para código
+template = """[INST] Você é um expert em Python. Forneça apenas código funcional.
+Pergunta: {input}
+Resposta: [/INST]"""
 
 prompt = PromptTemplate(input_variables=["input"], template=template)
 
-class CodeLLM:
-    def __init__(self, generator):
-        self.generator = generator
-        
-    def generate(self, prompt_value):
-        # Converter StringPromptValue para texto
-        if isinstance(prompt_value, StringPromptValue):
-            text = prompt_value.text
-        else:
-            text = str(prompt_value)
-        
-        logger.debug(f"Prompt recebido: {text}")
-        
-        response = self.generator(
-            text,
-            max_new_tokens=200,
-            temperature=0.4,
-            top_p=0.9,
-            num_return_sequences=1,
-            pad_token_id=50256
-        )
-        return response[0]['generated_text'].replace(text, "").strip()
+# 3. Sistema de cache para prompts comuns
+COMMON_QUESTIONS = {
+    "quem é você": "Sou um assistente de programação Python especializado em gerar código funcional.",
+    "help": "Formule sua pergunta como: 'Como fazer X em Python?' ou 'Mostre um exemplo de Y'"
+}
 
-# Chain corrigida
-code_llm = CodeLLM(code_generator)
+class CodeAssistant:
+    def __init__(self):
+        self.generator = load_model()
+        
+    def optimize_response(self, text):
+        # Filtros para respostas melhores
+        text = text.split("[/INST]")[-1]  # Pega apenas a resposta
+        text = text.split("```")[0]       # Remove markdown extra
+        return text.strip()
+
+    def generate(self, user_input):
+        user_input = user_input.lower().strip()
+        
+        # Verifica cache primeiro
+        if user_input in COMMON_QUESTIONS:
+            return COMMON_QUESTIONS[user_input]
+            
+        # Otimização de prompt
+        full_prompt = f"{prompt.format(input=user_input)}\nCódigo:"
+        
+        try:
+            start = time.time()
+            response = self.generator(
+                full_prompt,
+                max_new_tokens=150,
+                temperature=0.3,
+                top_k=40,
+                num_return_sequences=1,
+                do_sample=True
+            )
+            optimized = self.optimize_response(response[0]['generated_text'])
+            logger.info(f"Resposta gerada em {time.time()-start:.2f}s")
+            return optimized
+            
+        except Exception as e:
+            logger.error(f"Erro: {str(e)}")
+            return "Erro ao processar. Reformule sua pergunta."
+
+# 4. Fluxo otimizado
+assistant = CodeAssistant()
 chain = (
     {"input": RunnablePassthrough()}
-    | prompt
-    | RunnableLambda(code_llm.generate)
+    | RunnableLambda(assistant.generate)
 )
 
-# Loop de interação atualizado
+# Interface de usuário
 def run_chat():
-    logger.info("Agent pronto! Digite 'sair' para encerrar.")
+    print("🛠️  Assistente de Código Python")
+    print("Digite 'sair' para encerrar\n")
     
     while True:
         try:
-            user_input = input("\n👨💻 Usuário: ")
+            user_input = input("👉 Sua pergunta: ")
             
             if user_input.lower() in ["sair", "exit"]:
-                logger.info("Encerrando...")
                 break
                 
-            if not user_input.strip():
-                print("⚠️ Digite um comando válido")
-                continue
-                
-            print("\n🤖 Processando...")
+            print("⚡ Processando...")
             response = chain.invoke(user_input)
-            print(f"\n🧠 Resposta:\n{response}")
+            print(f"\n🧠 Resposta:\n{response}\n")
             
         except KeyboardInterrupt:
-            logger.info("Encerrado pelo usuário")
+            print("\nEncerrado pelo usuário")
             break
-        except Exception as e:
-            logger.error(f"Erro detalhado: {str(e)}", exc_info=True)
-            print("❌ Erro ao processar. Tente novamente.")
 
 if __name__ == "__main__":
     run_chat()
