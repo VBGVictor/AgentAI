@@ -2,3 +2,4 @@ torch==2.0.1
 transformers==4.30.0
 accelerate==0.27.2
 langchain-core==0.1.16
+numpy<2.0.0
